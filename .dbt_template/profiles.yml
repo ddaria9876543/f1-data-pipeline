@@ -1,0 +1,11 @@
+﻿f1_marts:
+  target: dev
+  outputs:
+    dev:
+      type: clickhouse
+      schema: f1_analytics
+      host: host.docker.internal
+      port: 8123
+      user: f1user
+      password: f1pass123
+      secure: False

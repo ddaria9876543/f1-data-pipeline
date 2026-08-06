@@ -1,0 +1,246 @@
+version: '3.8'
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_PUBLICIST_USER}:${POSTGRES_PUBLICIST_PASSWORD}@postgres-publisher/${POSTGRES_PUBLICIST_DB}
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
+    # PostgreSQL connection для ETL
+    POSTGRES_PUBLICIST_USER: ${POSTGRES_PUBLICIST_USER}
+    POSTGRES_PUBLICIST_PASSWORD: ${POSTGRES_PUBLICIST_PASSWORD}
+    POSTGRES_PUBLICIST_DB: ${POSTGRES_PUBLICIST_DB}
+    POSTGRES_HOST: postgres-publisher
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - airflow-logs:/opt/airflow/logs
+    - airflow-plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID:-50000}:0"
+  networks:
+    - data_postgres
+  depends_on:
+    postgres-publisher:
+      condition: service_healthy
+
+services:
+
+  # ─────────────────────────────────────────
+  # PostgreSQL (publisher) — сырые данные F1
+  # ─────────────────────────────────────────
+  postgres-publisher:
+    image: postgres:13
+    container_name: f1_postgres_publisher
+    environment:
+      POSTGRES_USER: ${POSTGRES_PUBLICIST_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PUBLICIST_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_PUBLICIST_DB}
+    volumes:
+      - postgres-publisher-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    command: >
+      postgres
+        -c wal_level=logical
+        -c max_replication_slots=4
+        -c max_wal_senders=4
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_PUBLICIST_USER}", "-d", "${POSTGRES_PUBLICIST_DB}"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    networks:
+      - data_postgres
+      - replication_network
+    ports:
+      - "5432:5432"
+
+  # ─────────────────────────────────────────
+  # PostgreSQL (subscriber) — реплика
+  # ─────────────────────────────────────────
+  postgres-subscriber:
+    image: postgres:13
+    container_name: f1_postgres_subscriber
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUBSCRIPTION_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_SUBSCRIPTION_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_SUBSCRIPTION_DB}
+    volumes:
+      - postgres-subscriber-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_SUBSCRIPTION_USER}", "-d", "${POSTGRES_SUBSCRIPTION_DB}"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    networks:
+      - replication_network
+      - click_net
+    depends_on:
+      postgres-publisher:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────
+  # ClickHouse — аналитический слой
+  # ─────────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: f1_clickhouse
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/ch_command:/docker-entrypoint-initdb.d
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - click_net
+      - metanet
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+
+  # ─────────────────────────────────────────
+  # Airflow — инициализация БД
+  # ─────────────────────────────────────────
+  airflow-init:
+    <<: *airflow-common
+    container_name: f1_airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db init
+        airflow users create \
+          --username airflow \
+          --firstname Air \
+          --lastname Flow \
+          --role Admin \
+          --email airflow@example.com \
+          --password airflow
+    restart: on-failure
+
+  # ─────────────────────────────────────────
+  # Airflow Webserver
+  # ─────────────────────────────────────────
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: f1_airflow_webserver
+    command: webserver
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ─────────────────────────────────────────
+  # Airflow Scheduler
+  # ─────────────────────────────────────────
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: f1_airflow_scheduler
+    command: scheduler
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ─────────────────────────────────────────
+  # DBT — трансформации и витрины
+  # ─────────────────────────────────────────
+  dbt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: f1_dbt
+    entrypoint: ["/bin/bash", "-c"]
+    volumes:
+      - ./dbt/f1:/usr/app/dbt
+      - ./.dbt:/home/airflow/.dbt
+    working_dir: /usr/app/dbt
+    command: ["sleep infinity"]
+
+    networks:
+      - click_net
+      - data_postgres
+
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+  # ─────────────────────────────────────────
+  # Metabase — дашборды
+  # ─────────────────────────────────────────
+  metabase:
+    image: metabase/metabase:v0.49.8
+    container_name: f1_metabase
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./metabase:/metabase-data
+    environment:
+      MB_DB_TYPE: h2
+      MB_DB_FILE: /metabase-data/metabase.db
+    networks:
+      - metanet
+      - data_postgres
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+# ─────────────────────────────────────────
+# Тома
+# ─────────────────────────────────────────
+volumes:
+  postgres-publisher-data:
+  postgres-subscriber-data:
+  clickhouse-data:
+  airflow-logs:
+  airflow-plugins:
+
+# ─────────────────────────────────────────
+# Сети (изолированные сегменты как в реальной компании)
+# ─────────────────────────────────────────
+networks:
+  data_postgres:
+    driver: bridge
+
+  replication_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.1.0/24
+
+  click_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.2.0/24
+
+  metanet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.3.0/24

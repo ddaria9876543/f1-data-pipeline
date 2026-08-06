@@ -1,0 +1,27 @@
+version: 2
+
+sources:
+  - name: f1_raw
+    description: "Сырые данные F1 из OpenF1 API"
+
+    database: "{{ 'f1_raw' if target.type == 'postgres' else 'f1_analytics' }}"
+    schema: "{{ 'public' if target.type == 'postgres' else 'f1_analytics' }}"
+
+    tables:
+      - name: sessions
+        description: "Все сессии F1: гонки, квалификации и практики"
+
+      - name: drivers
+        description: "Данные о пилотах по сессиям"
+
+      - name: laps
+        description: "Данные о прохождении кругов"
+
+      - name: pit_stops
+        description: "Данные о пит-стопах"
+
+      - name: positions
+        description: "Изменение позиций пилотов"
+
+      - name: weather
+        description: "Погодные условия во время сессий"

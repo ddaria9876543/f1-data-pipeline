@@ -1,0 +1,68 @@
+version: 2
+
+models:
+  - name: mart_fastest_laps
+    description: "Витрина лучших кругов пилотов по сезонам и этапам"
+
+    columns:
+      - name: year
+        data_tests:
+          - not_null
+
+      - name: circuit_short_name
+        data_tests:
+          - not_null
+
+      - name: driver_name
+        data_tests:
+          - not_null
+
+      - name: fastest_lap_sec
+        data_tests:
+          - not_null
+
+
+  - name: mart_pit_stop_impact
+    description: "Витрина анализа пит-стопов и итоговой позиции пилотов"
+
+    columns:
+      - name: year
+        data_tests:
+          - not_null
+
+      - name: circuit_short_name
+        data_tests:
+          - not_null
+
+      - name: driver_name
+        data_tests:
+          - not_null
+
+      - name: team_name
+        data_tests:
+          - not_null
+
+      - name: pit_stop_count
+        data_tests:
+          - not_null
+
+
+  - name: mart_team_comparison
+    description: "Витрина сравнения команд по сезонам"
+
+    columns:
+      - name: year
+        data_tests:
+          - not_null
+
+      - name: team_name
+        data_tests:
+          - not_null
+
+      - name: races_count
+        data_tests:
+          - not_null
+
+      - name: avg_position
+        data_tests:
+          - not_null
