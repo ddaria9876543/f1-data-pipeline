@@ -349,13 +349,3 @@ docker exec -it f1_postgres_publisher psql -U postgres -d f1_raw -c "\dt analyti
 
 ---
 
-## Возможные улучшения
-
-- автоматический запуск `dbt run` и `dbt test` из Airflow;
-- инкрементальная загрузка новых данных;
-- настройка GitHub Actions;
-- автоматическая проверка стиля Python-кода;
-- использование ClickHouse как аналитического хранилища;
-- подключение Yandex DataLens;
-- добавление новых сезонов Formula 1;
-- автоматическое обновление BI-дашборда.
