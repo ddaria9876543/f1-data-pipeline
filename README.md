@@ -1,6 +1,5 @@
 # 🏎️ F1 Data Pipeline
 
-**Трек:** Data Engineering  
 **Автор:** Дарья Байгина
 
 ## О проекте
