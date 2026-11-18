@@ -1,6 +1,42 @@
+
 version: 2
 
 models:
+
+  # -----------------------------------------
+  # Сессии
+  # -----------------------------------------
+  - name: stg_sessions
+    description: "Очищенные данные о сессиях Формулы-1"
+
+    columns:
+      - name: session_key
+        description: "Уникальный идентификатор сессии"
+        data_tests:
+          - not_null
+          - unique
+
+  # -----------------------------------------
+  # Пилоты
+  # -----------------------------------------
+  - name: stg_drivers
+    description: "Очищенные данные о пилотах"
+
+    columns:
+      - name: session_key
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('stg_sessions')
+              field: session_key
+
+      - name: driver_number
+        data_tests:
+          - not_null
+
+  # -----------------------------------------
+  # Круги
+  # -----------------------------------------
   - name: stg_laps
     description: "Очищенные данные о кругах"
 
@@ -8,6 +44,9 @@ models:
       - name: session_key
         data_tests:
           - not_null
+          - relationships:
+              to: ref('stg_sessions')
+              field: session_key
 
       - name: driver_number
         data_tests:
@@ -21,13 +60,19 @@ models:
         data_tests:
           - not_null
 
+  # -----------------------------------------
+  # Позиции пилотов
+  # -----------------------------------------
   - name: stg_positions
-    description: "Очищенные данные о позициях пилотов"
+    description: "История позиций пилотов"
 
     columns:
       - name: session_key
         data_tests:
           - not_null
+          - relationships:
+              to: ref('stg_sessions')
+              field: session_key
 
       - name: driver_number
         data_tests:
@@ -37,6 +82,9 @@ models:
         data_tests:
           - not_null
 
+  # -----------------------------------------
+  # Пит-стопы
+  # -----------------------------------------
   - name: stg_pit_stops
     description: "Очищенные данные о пит-стопах"
 
@@ -44,6 +92,9 @@ models:
       - name: session_key
         data_tests:
           - not_null
+          - relationships:
+              to: ref('stg_sessions')
+              field: session_key
 
       - name: driver_number
         data_tests:
@@ -57,6 +108,18 @@ models:
         data_tests:
           - not_null
 
+      - name: pit_stop_category
+        data_tests:
+          - accepted_values:
+              values:
+                - very_fast
+                - normal
+                - slow
+                - very_slow
+
+  # -----------------------------------------
+  # Погода
+  # -----------------------------------------
   - name: stg_weather
     description: "Очищенные погодные данные"
 
@@ -64,6 +127,9 @@ models:
       - name: session_key
         data_tests:
           - not_null
+          - relationships:
+              to: ref('stg_sessions')
+              field: session_key
 
       - name: air_temperature
         data_tests:
@@ -80,3 +146,12 @@ models:
       - name: pressure
         data_tests:
           - not_null
+
+      - name: weather_condition
+        data_tests:
+          - accepted_values:
+              values:
+                - rainy
+                - hot_track
+                - cold
+                - normal

@@ -1,11 +1,13 @@
-﻿f1_marts:
+﻿
+f1_marts:
   target: dev
   outputs:
     dev:
-      type: clickhouse
-      schema: f1_analytics
-      host: host.docker.internal
-      port: 8123
-      user: f1user
-      password: f1pass123
-      secure: False
+      type: postgres
+      host: postgres-publisher
+      port: 5432
+      user: "{{ env_var('POSTGRES_PUBLICIST_USER') }}"
+      password: "{{ env_var('POSTGRES_PUBLICIST_PASSWORD') }}"
+      dbname: "{{ env_var('POSTGRES_PUBLICIST_DB') }}"
+      schema: analytics
+      threads: 4

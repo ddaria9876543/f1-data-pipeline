@@ -1,4 +1,5 @@
-﻿apache-airflow==2.8.2
+﻿
+apache-airflow==2.8.2
 apache-airflow-providers-postgres==5.10.0
 
 # ETL
@@ -10,5 +11,4 @@ pandas==2.1.4
 
 # DBT
 dbt-core==1.8.0
-dbt-clickhouse==1.8.0
 dbt-postgres==1.8.2

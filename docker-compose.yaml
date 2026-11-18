@@ -1,246 +1,180 @@
-version: '3.8'
+
+# F1 Data Pipeline
+# OpenF1 API -> Airflow/Python -> PostgreSQL -> dbt -> Metabase
 
 x-airflow-common: &airflow-common
   build:
     context: .
     dockerfile: Dockerfile
+
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_PUBLICIST_USER}:${POSTGRES_PUBLICIST_PASSWORD}@postgres-publisher/${POSTGRES_PUBLICIST_DB}
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_PUBLICIST_USER}:${POSTGRES_PUBLICIST_PASSWORD}@postgres-publisher:5432/${POSTGRES_PUBLICIST_DB}
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
-    # PostgreSQL connection для ETL
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+
     POSTGRES_PUBLICIST_USER: ${POSTGRES_PUBLICIST_USER}
     POSTGRES_PUBLICIST_PASSWORD: ${POSTGRES_PUBLICIST_PASSWORD}
     POSTGRES_PUBLICIST_DB: ${POSTGRES_PUBLICIST_DB}
     POSTGRES_HOST: postgres-publisher
+    DBT_PROFILES_DIR: /usr/app/profiles
+
+
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - airflow-logs:/opt/airflow/logs
     - airflow-plugins:/opt/airflow/plugins
+
+    # dbt-проект и настройки подключения
+    - ./dbt/f1:/usr/app/dbt
+    - ./.dbt_template:/usr/app/profiles:ro
+
   user: "${AIRFLOW_UID:-50000}:0"
+
   networks:
     - data_postgres
+
   depends_on:
     postgres-publisher:
       condition: service_healthy
 
 services:
 
-  # ─────────────────────────────────────────
-  # PostgreSQL (publisher) — сырые данные F1
-  # ─────────────────────────────────────────
+  # PostgreSQL - хранение данных F1
   postgres-publisher:
     image: postgres:13
-    container_name: f1_postgres_publisher
+
     environment:
       POSTGRES_USER: ${POSTGRES_PUBLICIST_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PUBLICIST_PASSWORD}
       POSTGRES_DB: ${POSTGRES_PUBLICIST_DB}
+
     volumes:
       - postgres-publisher-data:/var/lib/postgresql/data
-      - ./postgres/init:/docker-entrypoint-initdb.d
-    command: >
-      postgres
-        -c wal_level=logical
-        -c max_replication_slots=4
-        -c max_wal_senders=4
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_PUBLICIST_USER}", "-d", "${POSTGRES_PUBLICIST_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
+      timeout: 5s
       retries: 5
       start_period: 10s
+
     networks:
       - data_postgres
-      - replication_network
+
     ports:
       - "5432:5432"
 
-  # ─────────────────────────────────────────
-  # PostgreSQL (subscriber) — реплика
-  # ─────────────────────────────────────────
-  postgres-subscriber:
-    image: postgres:13
-    container_name: f1_postgres_subscriber
-    environment:
-      POSTGRES_USER: ${POSTGRES_SUBSCRIPTION_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_SUBSCRIPTION_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_SUBSCRIPTION_DB}
-    volumes:
-      - postgres-subscriber-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_SUBSCRIPTION_USER}", "-d", "${POSTGRES_SUBSCRIPTION_DB}"]
-      interval: 10s
-      retries: 5
-      start_period: 10s
-    networks:
-      - replication_network
-      - click_net
-    depends_on:
-      postgres-publisher:
-        condition: service_healthy
-
-  # ─────────────────────────────────────────
-  # ClickHouse — аналитический слой
-  # ─────────────────────────────────────────
-  clickhouse:
-    image: clickhouse/clickhouse-server:23.8
-    container_name: f1_clickhouse
-    environment:
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-      - ./clickhouse/ch_command:/docker-entrypoint-initdb.d
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    healthcheck:
-      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
-      interval: 10s
-      retries: 5
-      start_period: 20s
-    networks:
-      - click_net
-      - metanet
-    ports:
-      - "8123:8123"
-      - "9000:9000"
-
-  # ─────────────────────────────────────────
-  # Airflow — инициализация БД
-  # ─────────────────────────────────────────
+  # Airflow - инициализация
   airflow-init:
     <<: *airflow-common
-    container_name: f1_airflow_init
     entrypoint: /bin/bash
+
     command:
       - -c
       - |
-        airflow db init
-        airflow users create \
+        airflow db migrate &&
+        (airflow users create \
           --username airflow \
           --firstname Air \
           --lastname Flow \
           --role Admin \
           --email airflow@example.com \
-          --password airflow
+          --password "$${AIRFLOW_ADMIN_PASSWORD:-airflow}" || true)
+
     restart: on-failure
 
-  # ─────────────────────────────────────────
-  # Airflow Webserver
-  # ─────────────────────────────────────────
+  # Airflow - веб-интерфейс
   airflow-webserver:
     <<: *airflow-common
-    container_name: f1_airflow_webserver
     command: webserver
+
     ports:
       - "8082:8080"
+
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
-    restart: always
+
+    restart: unless-stopped
+
     depends_on:
       airflow-init:
         condition: service_completed_successfully
 
-  # ─────────────────────────────────────────
-  # Airflow Scheduler
-  # ─────────────────────────────────────────
+  # Airflow - планировщик DAG
   airflow-scheduler:
     <<: *airflow-common
-    container_name: f1_airflow_scheduler
     command: scheduler
-    restart: always
+
+    restart: unless-stopped
+
     depends_on:
       airflow-init:
         condition: service_completed_successfully
 
-  # ─────────────────────────────────────────
-  # DBT — трансформации и витрины
-  # ─────────────────────────────────────────
+  # dbt - SQL-преобразования и витрины
   dbt:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: f1_dbt
-    entrypoint: ["/bin/bash", "-c"]
-    volumes:
-      - ./dbt/f1:/usr/app/dbt
-      - ./.dbt:/home/airflow/.dbt
+
     working_dir: /usr/app/dbt
+
+    entrypoint: ["/bin/bash", "-c"]
     command: ["sleep infinity"]
 
-    networks:
-      - click_net
-      - data_postgres
+    volumes:
+      - ./dbt/f1:/usr/app/dbt
+      - ./.dbt_template:/usr/app/profiles:ro
 
     environment:
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      POSTGRES_PUBLICIST_USER: ${POSTGRES_PUBLICIST_USER}
+      POSTGRES_PUBLICIST_PASSWORD: ${POSTGRES_PUBLICIST_PASSWORD}
+      POSTGRES_PUBLICIST_DB: ${POSTGRES_PUBLICIST_DB}
+      DBT_PROFILES_DIR: /usr/app/profiles
+
+    networks:
+      - data_postgres
 
     depends_on:
-      clickhouse:
+      postgres-publisher:
         condition: service_healthy
-  # ─────────────────────────────────────────
-  # Metabase — дашборды
-  # ─────────────────────────────────────────
+
+  # Metabase - аналитические дашборды
   metabase:
     image: metabase/metabase:v0.49.8
-    container_name: f1_metabase
+
     ports:
-      - "3000:3000"
+      - "3001:3000"
+
     volumes:
       - ./metabase:/metabase-data
+
     environment:
       MB_DB_TYPE: h2
       MB_DB_FILE: /metabase-data/metabase.db
+
     networks:
-      - metanet
       - data_postgres
+
     depends_on:
-      clickhouse:
+      postgres-publisher:
         condition: service_healthy
 
-# ─────────────────────────────────────────
-# Тома
-# ─────────────────────────────────────────
+# Docker volumes
 volumes:
   postgres-publisher-data:
-  postgres-subscriber-data:
-  clickhouse-data:
   airflow-logs:
   airflow-plugins:
 
-# ─────────────────────────────────────────
-# Сети (изолированные сегменты как в реальной компании)
-# ─────────────────────────────────────────
+# Docker networks
 networks:
   data_postgres:
     driver: bridge
-
-  replication_network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 192.168.1.0/24
-
-  click_net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 192.168.2.0/24
-
-  metanet:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 192.168.3.0/24
